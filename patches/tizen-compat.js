@@ -31,15 +31,50 @@
     '[tabindex]:not([tabindex="-1"])',
     '[role="button"]:not([disabled])',
     '[role="menuitem"]',
+    '[role="menuitemradio"]',
+    '[role="menuitemcheckbox"]',
     '[role="option"]',
     '[role="tab"]',
-    '[role="link"]'
+    '[role="link"]',
+    '[role="switch"]',
+    '[role="checkbox"]',
+    '[role="radio"]',
+    '[role="slider"]'
   ].join(',');
 
-  function getFocusableElements() {
-    return Array.from(document.querySelectorAll(FOCUSABLE)).filter(function (el) {
+  // Sonance-style scope trap: when a modal/drawer/popover/menu is open,
+  // restrict spatial nav to within it. Picks topmost open overlay.
+  var OVERLAY_SELECTORS = [
+    '[role="dialog"][aria-modal="true"]',
+    '.mantine-Modal-content',
+    '.mantine-Drawer-content',
+    '.mantine-Popover-dropdown',
+    '.mantine-Menu-dropdown',
+    '.mantine-HoverCard-dropdown',
+    '[data-context-menu]'
+  ];
+
+  function getActiveScope() {
+    for (var i = OVERLAY_SELECTORS.length - 1; i >= 0; i--) {
+      var nodes = document.querySelectorAll(OVERLAY_SELECTORS[i]);
+      for (var j = nodes.length - 1; j >= 0; j--) {
+        var n = nodes[j];
+        if (n.offsetParent !== null || window.getComputedStyle(n).position === 'fixed') {
+          var rect = n.getBoundingClientRect();
+          if (rect.width > 0 && rect.height > 0) return n;
+        }
+      }
+    }
+    return document;
+  }
+
+  function getFocusableElements(scope) {
+    scope = scope || getActiveScope();
+    return Array.prototype.slice.call(scope.querySelectorAll(FOCUSABLE)).filter(function (el) {
       var style = window.getComputedStyle(el);
       if (style.display === 'none' || style.visibility === 'hidden') return false;
+      if (style.pointerEvents === 'none') return false;
+      if (el.getAttribute('aria-hidden') === 'true') return false;
       if (el.offsetParent === null && style.position !== 'fixed') return false;
       var rect = el.getBoundingClientRect();
       return rect.width > 0 && rect.height > 0;
@@ -54,7 +89,7 @@
            (a1 >= b1 && a1 <= b2) || (a2 >= b1 && a2 <= b2);
   }
 
-  // Jellyfin-style edge-geometry spatial nav.
+  // Jellyfin-style edge-geometry spatial nav, scoped to current overlay.
   function findNext(current, direction) {
     var elements = getFocusableElements();
     var r = getRect(current);
@@ -98,6 +133,51 @@
     window.dispatchEvent(new CustomEvent('fieshzen:player', { detail: { action: action } }));
   }
 
+  // ── 3b. Per-route focus memory (sonance-inspired) ──────────────────────
+  // Store last focused element by route so Back returns the user where they were.
+  var routeFocus = Object.create(null);
+  function routeKey() { return (location.hash || '') + '|' + (location.pathname || ''); }
+  function rememberFocus() {
+    var a = document.activeElement;
+    if (!a || a === document.body) return;
+    routeFocus[routeKey()] = a;
+  }
+  function restoreOrInitFocus() {
+    var saved = routeFocus[routeKey()];
+    if (saved && document.contains(saved)) {
+      try { saved.focus(); saved.scrollIntoView({ block: 'nearest' }); return; } catch (_) {}
+    }
+    // Otherwise: focus first plausible content element (skip header/sidebar).
+    var all = getFocusableElements(document);
+    if (!all.length) return;
+    // Prefer items inside main / [role=main] / .mantine-AppShell-main.
+    var main = document.querySelector('main, [role="main"], .mantine-AppShell-main, #main, #root main');
+    if (main) {
+      var inMain = all.filter(function (e) { return main.contains(e); });
+      if (inMain.length) { try { inMain[0].focus(); inMain[0].scrollIntoView({ block: 'nearest' }); return; } catch (_) {} }
+    }
+    try { all[0].focus(); } catch (_) {}
+  }
+
+  window.addEventListener('beforeunload', rememberFocus);
+  window.addEventListener('hashchange', function () {
+    setTimeout(restoreOrInitFocus, 120);
+  });
+  window.addEventListener('popstate', function () {
+    setTimeout(restoreOrInitFocus, 120);
+  });
+  // Patch pushState/replaceState so SPA route changes also trigger restore.
+  ['pushState', 'replaceState'].forEach(function (m) {
+    var orig = history[m];
+    if (typeof orig !== 'function') return;
+    history[m] = function () {
+      rememberFocus();
+      var r = orig.apply(this, arguments);
+      setTimeout(restoreOrInitFocus, 120);
+      return r;
+    };
+  });
+
   // ── 4. Keydown handler ──────────────────────────────────────────────────
   function handleKeyDown(e) {
     var code = e.keyCode;
@@ -113,7 +193,24 @@
     // Back key (Tizen)
     if (code === 10009) {
       e.preventDefault();
-      // If at the entry route, allow exit; otherwise go back
+      // Sonance-style: if focus is inside an input or an overlay, escape that
+      // first instead of routing back.
+      var ae = document.activeElement;
+      var inField = ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable);
+      if (inField) {
+        try { ae.blur(); } catch (_) {}
+        return;
+      }
+      var scope = getActiveScope();
+      if (scope !== document) {
+        // Try to click a close button in the overlay; otherwise dispatch Esc.
+        var closeBtn = scope.querySelector('[aria-label="Close"], [data-mantine-stop-propagation="true"][aria-label*="close" i], .mantine-Modal-close, .mantine-Drawer-close');
+        if (closeBtn) { try { closeBtn.click(); return; } catch (_) {} }
+        try {
+          document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, which: 27, bubbles: true }));
+        } catch (_) {}
+        return;
+      }
       try {
         if (window.history.length > 1) {
           window.history.back();
@@ -147,6 +244,18 @@
           if (nxt) { nxt.focus(); try { nxt.scrollIntoView({ block: 'nearest' }); } catch (_) {} }
         }, 80);
         return;
+      }
+      // Enter on non-native focusable (div[role=button], list rows, etc.):
+      // browser only auto-clicks <button>/<a>. Synthesise click for the rest.
+      if (actv && actv !== document.body) {
+        var nativelyClickable = atag === 'button' || atag === 'a' ||
+          (atag === 'input' && (atype === 'submit' || atype === 'button' || atype === 'reset' ||
+                                 atype === 'checkbox' || atype === 'radio'));
+        if (!nativelyClickable) {
+          e.preventDefault();
+          try { actv.click(); } catch (_) {}
+          return;
+        }
       }
     }
 
@@ -208,18 +317,28 @@
   // ── 5. Initialise ───────────────────────────────────────────────────────
   registerTizenKeys();
   document.addEventListener('keydown', handleKeyDown, true);
+  // Track focus changes for route memory.
+  document.addEventListener('focusin', function (e) {
+    if (e.target && e.target !== document.body) {
+      routeFocus[routeKey()] = e.target;
+    }
+  }, true);
 
   // Initial focus once React mounts
   window.addEventListener('load', function () {
     setTimeout(function () {
       if (document.activeElement && document.activeElement !== document.body) return;
-      var first = getFocusableElements()[0];
-      if (first) first.focus();
+      restoreOrInitFocus();
     }, 1500);
   });
 
   // Expose for debugging
-  window.__fieshzenCompat = { getFocusableElements: getFocusableElements, findNext: findNext };
+  window.__fieshzenCompat = {
+    getFocusableElements: getFocusableElements,
+    findNext: findNext,
+    getActiveScope: getActiveScope,
+    routeFocus: routeFocus
+  };
 
-  console.log('[Fieshzen] Tizen compat layer initialised');
+  console.log('[Fieshzen] Tizen compat layer initialised (sonance-style)');
 })();
