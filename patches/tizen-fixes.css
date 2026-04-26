@@ -1,0 +1,84 @@
+/* ============================================================
+   Fieshzen — Tizen WebKit CSS Compatibility Fixes
+   ============================================================ */
+
+/* 1. Disable transform/scale on focus (breaks Tizen layout) */
+*:focus,
+*:focus-within {
+    transform: none !important;
+}
+
+/* 2. Reduce motion globally — Tizen WebKit struggles with heavy animation */
+@media (prefers-reduced-motion: no-preference) {
+    *, *::before, *::after {
+        animation-duration: 0.2s;
+        transition-duration: 0.2s;
+    }
+}
+
+/* 3. Strong, visible focus ring for D-pad navigation */
+[tabindex]:focus,
+button:focus,
+a:focus,
+input:focus,
+[role="button"]:focus,
+[role="link"]:focus,
+[role="menuitem"]:focus,
+[role="option"]:focus,
+[role="tab"]:focus {
+    outline: 3px solid #5865f2 !important;
+    outline-offset: 2px !important;
+    background-color: rgba(88, 101, 242, 0.18) !important;
+    z-index: 10;
+}
+
+/* 4. Mantine focus rings */
+.mantine-UnstyledButton-root:focus,
+.mantine-ActionIcon-root:focus,
+.mantine-NavLink-root:focus,
+.mantine-Button-root:focus {
+    outline: 3px solid #5865f2 !important;
+    outline-offset: 2px !important;
+}
+
+/* 5. Force hardware compositing on cover art (helps WebP rendering) */
+img {
+    max-width: 100%;
+    height: auto;
+}
+
+/* 6. Hide scrollbars on TV (look bad with no mouse pointer) */
+::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+    display: none;
+}
+
+* {
+    scrollbar-width: none;
+}
+
+/* 7. Show hover-only overlay buttons always on TV */
+[class*="fs-card-overlay"],
+[class*="play-button-overlay"],
+[class*="card-overlay-play"] {
+    opacity: 1 !important;
+}
+
+/* 8. Font smoothing */
+html, body {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+/* 9. Prevent text selection on TV (no use case) */
+body {
+    -webkit-user-select: none;
+    user-select: none;
+}
+
+/* allow inputs to still accept focus/text */
+input, textarea, [contenteditable] {
+    -webkit-user-select: text;
+    user-select: text;
+}

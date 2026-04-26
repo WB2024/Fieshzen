@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<widget xmlns="http://www.w3.org/ns/widgets"
+        xmlns:tizen="http://tizen.org/ns/widgets"
+        id="https://github.com/WB2024/fieshzen"
+        version="1.0.0"
+        viewmodes="fullscreen">
+
+  <tizen:application id="FshznTV001.Fieshzen"
+                     package="FshznTV001"
+                     required_version="4.0"
+                     launch_mode="single"/>
+
+  <content src="index.html"/>
+
+  <name>Fieshzen</name>
+
+  <icon src="assets/128x128.png"/>
+
+  <access origin="*" subdomains="true"/>
+
+  <tizen:privilege name="http://tizen.org/privilege/internet"/>
+  <tizen:privilege name="http://tizen.org/privilege/network.state"/>
+  <tizen:privilege name="http://tizen.org/privilege/websetting"/>
+  <tizen:privilege name="http://tizen.org/privilege/tv.inputdevice"/>
+
+  <tizen:metadata key="http://samsung.com/tv/metadata/use.network" value="true"/>
+
+  <tizen:setting screen-orientation="landscape"
+                 background-support="disable"
+                 encryption="disable"
+                 install-location="auto"
+                 hwkey-event="enable"/>
+
+  <tizen:content-security-policy>
+    default-src * 'unsafe-inline' 'unsafe-eval' data: blob:;
+    script-src * 'unsafe-inline' 'unsafe-eval' data: blob:;
+    connect-src *;
+    media-src *;
+    img-src * data: blob:;
+    style-src * 'unsafe-inline';
+    font-src * data:;
+  </tizen:content-security-policy>
+
+</widget>
