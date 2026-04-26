@@ -49,41 +49,48 @@
   function getRect(el) { return el.getBoundingClientRect(); }
   function getCenter(rect) { return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }; }
 
+  function intersects(a1, a2, b1, b2) {
+    return (b1 >= a1 && b1 <= a2) || (b2 >= a1 && b2 <= a2) ||
+           (a1 >= b1 && a1 <= b2) || (a2 >= b1 && a2 <= b2);
+  }
+
+  // Jellyfin-style edge-geometry spatial nav.
   function findNext(current, direction) {
     var elements = getFocusableElements();
-    var currentRect = getRect(current);
-    var currentCenter = getCenter(currentRect);
+    var r = getRect(current);
+    var p1x = r.left, p1y = r.top;
+    var p2x = r.left + r.width - 1, p2y = r.top + r.height - 1;
+    var sMidX = r.left + r.width / 2, sMidY = r.top + r.height / 2;
+    var dirIdx = { left: 0, right: 1, up: 2, down: 3 }[direction];
 
-    var candidates = elements.filter(function (el) {
-      if (el === current) return false;
-      var rect = getRect(el);
-      var center = getCenter(rect);
-      switch (direction) {
-        case 'up':    return center.y < currentCenter.y - 5;
-        case 'down':  return center.y > currentCenter.y + 5;
-        case 'left':  return center.x < currentCenter.x - 5;
-        case 'right': return center.x > currentCenter.x + 5;
+    var best = null, minDist = Infinity;
+    for (var i = 0; i < elements.length; i++) {
+      var c = elements[i];
+      if (c === current) continue;
+      var er = getRect(c);
+      if (!er.width && !er.height) continue;
+      switch (dirIdx) {
+        case 0: if (er.left >= r.left || er.right === r.right) continue; break;
+        case 1: if (er.right <= r.right || er.left === r.left) continue; break;
+        case 2: if (er.top >= r.top || er.bottom >= r.bottom) continue; break;
+        case 3: if (er.bottom <= r.bottom || er.top <= r.top) continue; break;
       }
-      return false;
-    });
-
-    if (!candidates.length) return null;
-
-    candidates.sort(function (a, b) {
-      var ca = getCenter(getRect(a));
-      var cb = getCenter(getRect(b));
-      var scoreA, scoreB;
-      if (direction === 'up' || direction === 'down') {
-        scoreA = Math.abs(ca.y - currentCenter.y) + Math.abs(ca.x - currentCenter.x) * 0.3;
-        scoreB = Math.abs(cb.y - currentCenter.y) + Math.abs(cb.x - currentCenter.x) * 0.3;
-      } else {
-        scoreA = Math.abs(ca.x - currentCenter.x) + Math.abs(ca.y - currentCenter.y) * 0.3;
-        scoreB = Math.abs(cb.x - currentCenter.x) + Math.abs(cb.y - currentCenter.y) * 0.3;
+      var x = er.left, y = er.top;
+      var x2 = x + er.width - 1, y2 = y + er.height - 1;
+      var ix = intersects(p1x, p2x, x, x2);
+      var iy = intersects(p1y, p2y, y, y2);
+      var midX = er.left + er.width / 2, midY = er.top + er.height / 2;
+      var dx, dy;
+      switch (dirIdx) {
+        case 0: dx = Math.abs(p1x - Math.min(p1x, x2)); dy = iy ? 0 : Math.abs(sMidY - midY); break;
+        case 1: dx = Math.abs(p2x - Math.max(p2x, x));  dy = iy ? 0 : Math.abs(sMidY - midY); break;
+        case 2: dy = Math.abs(p1y - Math.min(p1y, y2)); dx = ix ? 0 : Math.abs(sMidX - midX); break;
+        case 3: dy = Math.abs(p2y - Math.max(p2y, y));  dx = ix ? 0 : Math.abs(sMidX - midX); break;
       }
-      return scoreA - scoreB;
-    });
-
-    return candidates[0];
+      var d = Math.sqrt(dx * dx + dy * dy);
+      if (d < minDist) { minDist = d; best = c; }
+    }
+    return best;
   }
 
   // ── 3. Player action bridge ─────────────────────────────────────────────
@@ -121,6 +128,28 @@
     if (code === 403) { dispatchPlayerAction('toggleShuffle'); e.preventDefault(); return; }
     if (code === 404) { dispatchPlayerAction('toggleRepeat'); e.preventDefault(); return; }
 
+    // Enter on text input → submit + blur, then drop into results.
+    if (code === 13) {
+      var actv = document.activeElement;
+      var atag = actv && actv.tagName ? actv.tagName.toLowerCase() : '';
+      var atype = actv && actv.getAttribute ? (actv.getAttribute('type') || '') : '';
+      var isTxt = (atag === 'input' && atype !== 'checkbox' && atype !== 'radio' &&
+                   atype !== 'button' && atype !== 'submit' && atype !== 'reset' &&
+                   atype !== 'range' && atype !== 'file') ||
+                  atag === 'textarea' ||
+                  (actv && actv.isContentEditable === true);
+      if (isTxt) {
+        try { actv.dispatchEvent(new Event('change', { bubbles: true })); } catch (_) {}
+        try { actv.blur(); } catch (_) {}
+        e.preventDefault();
+        setTimeout(function () {
+          var nxt = findNext(actv, 'down');
+          if (nxt) { nxt.focus(); try { nxt.scrollIntoView({ block: 'nearest' }); } catch (_) {} }
+        }, 80);
+        return;
+      }
+    }
+
     // Arrow keys → spatial navigation
     var dirMap = { 37: 'left', 38: 'up', 39: 'right', 40: 'down' };
     var direction = dirMap[code];
@@ -137,13 +166,20 @@
       return;
     }
 
-    // Native arrow handlers — let them run
+    // Native arrow handlers — jellyfin model:
+    //   text input/textarea  → LEFT/RIGHT pass through (caret), UP/DOWN navigate.
+    //   select / slider      → all arrows pass through (native control).
     var tag = (active.tagName || '').toLowerCase();
     var role = active.getAttribute && (active.getAttribute('role') || '');
     var typeAttr = active.getAttribute && (active.getAttribute('type') || '');
-    var nativeArrow = (
-      tag === 'input' && typeAttr !== 'checkbox' && typeAttr !== 'radio' && typeAttr !== 'button' ||
+    var isTextInput = (
+      (tag === 'input' && typeAttr !== 'checkbox' && typeAttr !== 'radio' &&
+        typeAttr !== 'button' && typeAttr !== 'submit' && typeAttr !== 'reset' &&
+        typeAttr !== 'range' && typeAttr !== 'file') ||
       tag === 'textarea' ||
+      (active.isContentEditable === true)
+    );
+    var isNativeArrowConsumer = (
       tag === 'select' ||
       role === 'slider' ||
       role === 'scrollbar' ||
@@ -152,12 +188,19 @@
         active.classList.contains('mantine-Slider-root')
       ))
     );
-    if (nativeArrow) return;
+    if (isNativeArrowConsumer) return;
+    if (isTextInput && (direction === 'left' || direction === 'right')) return;
 
     var next = findNext(active, direction);
     if (next) {
+      // Blur input so further keys don't go to it.
+      if (isTextInput) { try { active.blur(); } catch (_) {} }
       next.focus();
       try { next.scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch (e3) {}
+      e.preventDefault();
+      e.stopPropagation();
+    } else if (isTextInput) {
+      // No candidate but still consume so caret doesn't move on up/down.
       e.preventDefault();
     }
   }
