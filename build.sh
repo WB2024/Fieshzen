@@ -43,15 +43,26 @@ cp "$SCRIPT_DIR/tizen/config.xml" "$TMP_DIR/config.xml"
 cp "$SCRIPT_DIR/patches/tizen-compat.js" "$TMP_DIR/tizen-compat.js"
 cp "$SCRIPT_DIR/patches/tizen-fixes.css" "$TMP_DIR/tizen-fixes.css"
 
+# Optional: remote debug logger (only when DEBUG_HOST is set)
+DEBUG_PORT="${DEBUG_PORT:-9876}"
+if [ -n "${DEBUG_HOST:-}" ]; then
+  echo "==> Debug logger enabled → ws://$DEBUG_HOST:$DEBUG_PORT"
+  sed "s|__DEBUG_HOST__|$DEBUG_HOST|g; s|__DEBUG_PORT__|$DEBUG_PORT|g" \
+    "$SCRIPT_DIR/patches/debug-logger.js" > "$TMP_DIR/debug-logger.js"
+fi
+
 # Inject patch tags into index.html (after the existing settings.js script)
-python3 - "$TMP_DIR/index.html" <<'PYEOF'
-import sys, pathlib
+python3 - "$TMP_DIR/index.html" "${DEBUG_HOST:-}" <<'PYEOF'
+import sys, pathlib, os
 p = pathlib.Path(sys.argv[1])
+debug_host = sys.argv[2] if len(sys.argv) > 2 else ''
 html = p.read_text(encoding="utf-8")
 needle = '<script src="settings.js"></script>'
+debug_tag = '    <script src="debug-logger.js"></script>\n' if debug_host else ''
 inject = (
     '<script src="settings.js"></script>\n'
     '    <link rel="stylesheet" href="tizen-fixes.css">\n'
+    + debug_tag +
     '    <script src="tizen-compat.js"></script>'
 )
 if needle in html:
@@ -60,9 +71,10 @@ else:
     # fallback: inject before </head>
     html = html.replace('</head>',
         '    <link rel="stylesheet" href="tizen-fixes.css">\n'
+        + debug_tag +
         '    <script src="tizen-compat.js"></script>\n  </head>', 1)
 p.write_text(html, encoding="utf-8")
-print("index.html patched.")
+print("index.html patched." + (" [debug-logger included]" if debug_host else ""))
 PYEOF
 
 # Provide a default settings.js so the manual build still launches (SAWSUBE

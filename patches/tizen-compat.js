@@ -5,6 +5,124 @@
 (function () {
   'use strict';
 
+  // ── 0. Feishin audio-unlock fix for Tizen 6.5 ──────────────────────────
+  // Feishin uses a silent data:audio/mp3;base64,... "EMPTY_SOURCE" as a
+  // Safari/WebKit autoplay unlock trick. Tizen 6.5 WebKit hard-rejects ALL
+  // data: URIs on <audio> elements with MediaError code 4.
+  //
+  // Strategy: rather than trying to prevent Tizen from seeing the data: URI
+  // (descriptor patching doesn't reliably work on this WebKit), we instead:
+  //   1. Intercept the 'error' event on media elements and suppress it for
+  //      data: URIs so react-player's retry loop never starts.
+  //   2. Patch play() to resolve immediately for data: src elements so
+  //      react-player considers autoplay unlocked.
+  //   3. Patch load() to no-op for data: src elements.
+  //
+  // We hook into document.createElement('audio') (which debug-logger also
+  // patches, but our patch runs last and wraps the debug-logger wrapper).
+  (function fixTizenDataUriAudio() {
+    var isDataUri = function (val) {
+      return typeof val === 'string' && val.indexOf('data:') === 0;
+    };
+
+    // Also try property setter (may or may not work depending on WebKit configurability)
+    try {
+      var srcDesc = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'src');
+      if (srcDesc && srcDesc.set && srcDesc.configurable) {
+        var realSrcSetter = srcDesc.set;
+        Object.defineProperty(HTMLMediaElement.prototype, 'src', {
+          get: srcDesc.get,
+          set: function (val) {
+            if (isDataUri(val)) {
+              console.log('[Fieshzen] Blocked data: URI on audio.src');
+              return;
+            }
+            return realSrcSetter.call(this, val);
+          },
+          configurable: true,
+          enumerable: srcDesc.enumerable,
+        });
+      }
+    } catch (e) { console.log('[Fieshzen] src setter patch failed: ' + e); }
+
+    // setAttribute interception for React's reconciler path
+    try {
+      var origSetAttr = Element.prototype.setAttribute;
+      Element.prototype.setAttribute = function (name, value) {
+        if (name === 'src' && isDataUri(value) && this instanceof HTMLMediaElement) {
+          console.log('[Fieshzen] Blocked data: URI via setAttribute');
+          return;
+        }
+        return origSetAttr.call(this, name, value);
+      };
+    } catch (e) { console.log('[Fieshzen] setAttribute patch failed: ' + e); }
+
+    // Core fix: intercept createElement to wrap each audio element instance.
+    // This runs AFTER debug-logger's createElement patch, so we further wrap.
+    var origCreateElement = document.createElement.bind(document);
+    document.createElement = function (tag) {
+      var el = origCreateElement(tag);
+      if (typeof tag === 'string' && tag.toLowerCase() === 'audio') {
+        // Patch play() on this instance — return resolved promise for data: src
+        var origPlay = el.play ? el.play.bind(el) : null;
+        el.play = function () {
+          var src = el.getAttribute('src') || el.src || '';
+          if (!src || isDataUri(src)) {
+            console.log('[Fieshzen] play() no-op for data: URI audio');
+            return Promise.resolve();
+          }
+          return origPlay ? origPlay() : Promise.resolve();
+        };
+
+        // Patch load() on this instance — no-op for data: src
+        var origLoad = el.load ? el.load.bind(el) : null;
+        el.load = function () {
+          var src = el.getAttribute('src') || el.src || '';
+          if (!src || isDataUri(src)) {
+            console.log('[Fieshzen] load() no-op for data: URI audio');
+            return;
+          }
+          if (origLoad) origLoad();
+        };
+
+        // Suppress 'error' events for data: URI src so react-player retry loop
+        // never starts. We use capture phase to fire before react-player's handler.
+        el.addEventListener('error', function (evt) {
+          var src = el.getAttribute('src') || el.src || '';
+          if (!src || isDataUri(src)) {
+            console.log('[Fieshzen] Suppressed error event for data: URI audio');
+            evt.stopImmediatePropagation();
+          }
+        }, true);
+      }
+      return el;
+    };
+
+    // Also patch window.Audio constructor the same way
+    try {
+      var OrigAudioCtor = window.Audio;
+      if (OrigAudioCtor) {
+        window.Audio = function (src) {
+          var el = src ? new OrigAudioCtor(src) : new OrigAudioCtor();
+          // Reuse the same instance patches via a fake createElement call
+          // Actually just patch directly:
+          var origPlay2 = el.play ? el.play.bind(el) : null;
+          el.play = function () {
+            var s = el.getAttribute('src') || el.src || '';
+            if (!s || isDataUri(s)) { console.log('[Fieshzen] play() no-op (Audio ctor)'); return Promise.resolve(); }
+            return origPlay2 ? origPlay2() : Promise.resolve();
+          };
+          el.addEventListener('error', function (evt) {
+            var s = el.getAttribute('src') || el.src || '';
+            if (!s || isDataUri(s)) { evt.stopImmediatePropagation(); }
+          }, true);
+          return el;
+        };
+        window.Audio.prototype = OrigAudioCtor.prototype;
+      }
+    } catch (e) { /* Audio ctor patch failed */ }
+  })();
+
   // ── 1. Register Samsung media keys ─────────────────────────────────────
   function registerTizenKeys() {
     if (typeof window === 'undefined') return;
